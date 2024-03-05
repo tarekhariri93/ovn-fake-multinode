@@ -5,7 +5,7 @@
 #set -o xtrace
 set -o errexit
 
-RUNC_CMD="${RUNC_CMD:-podman}"
+RUNC_CMD="${RUNC_CMD:-docker}"
 
 CENTRAL_IMAGE=${CENTRAL_IMAGE:-"ovn/ovn-multi-node:latest"}
 CHASSIS_IMAGE=${CHASSIS_IMAGE:-"ovn/ovn-multi-node:latest"}
@@ -56,6 +56,10 @@ OVN_START_IC_DBS=${OVN_START_IC_DBS:-yes}
 CENTRAL_IC_IP="${CENTRAL_IC_IP:-}"
 CENTRAL_IC_ID="${CENTRAL_IC_ID:-}"
 
+OVN_FORWARDED_PORT="${OVN_FORWARDED_PORT:-6641}"
+OVN_TAG="${OVN_TAG:-v23.09.0}"
+OVS_TAG="${OVS_TAG:-v2.17.9}"
+
 # Controls the type of OVS datapath to be used.
 # Possible values:
 # - 'system' for the kernel datapath.
@@ -64,15 +68,15 @@ CENTRAL_IC_ID="${CENTRAL_IC_ID:-}"
 # https://man7.org/linux/man-pages/man5/ovs-vswitchd.conf.db.5.html#Bridge_TABLE
 OVN_DP_TYPE="${OVN_DP_TYPE:-system}"
 
-ENABLE_SSL="${ENABLE_SSL:=yes}"
+ENABLE_SSL="${ENABLE_SSL:=no}"
 ENABLE_ETCD="${ENABLE_ETCD:=no}"
-REMOTE_PROT=ssl
+REMOTE_PROT=tcp
 
-if [ "$ENABLE_SSL" != "yes" ]; then
-    REMOTE_PROT=tcp
+if [ "$ENABLE_SSL" == "yes" ]; then
+    REMOTE_PROT=ssl
 fi
 
-CREATE_FAKE_VMS="${CREATE_FAKE_VMS:-yes}"
+CREATE_FAKE_VMS="${CREATE_FAKE_VMS:-no}"
 
 SSL_CERTS_PATH="/opt/ovn"
 
@@ -148,9 +152,16 @@ function start-container() {
       vagrant_mount="-v /vagrant:/vagrant"
   fi
 
-  ${RUNC_CMD} run  -dt ${volumes} -v "${FAKENODE_MNT_DIR}:/data" --privileged \
+  if [[ "$name" == *"ovn-central-az"* ]]; then
+    ${RUNC_CMD} run -p $OVN_FORWARDED_PORT:6641 -dt ${volumes} -v "${FAKENODE_MNT_DIR}:/data" --privileged \
               $vagrant_mount --name="${name}" --hostname="${name}" \
               "${image}" > /dev/null
+  else
+    ${RUNC_CMD} run  -dt ${volumes} -v "${FAKENODE_MNT_DIR}:/data" --privileged \
+                $vagrant_mount --name="${name}" --hostname="${name}" \
+                "${image}" > /dev/null
+  fi
+
 
   # Make sure ipv6 in container is enabled if we will be using it
   if [ "$IPV6_UNDERLAY" = "yes" ]; then
@@ -166,8 +177,8 @@ function stop-container() {
 
 function stop() {
     for i in $(seq $CENTRAL_COUNT); do
-        ip netns delete ovnfake-ext$i || :
-        ip netns delete ovnfake-int$i || :
+        ip netns delete ovnfake-ext$i 2> /dev/null || :
+        ip netns delete ovnfake-int$i 2> /dev/null || :
     done
     if [ "${OVN_BR_CLEANUP}" == "yes" ]; then
         ovs-vsctl --if-exists del-br $OVN_BR || exit 1
@@ -580,6 +591,7 @@ function check-no-gw {
 
 function start() {
     echo "Starting OVN cluster"
+    sudo /usr/share/openvswitch/scripts/ovs-ctl --system-id=testovn start
     ovn_central=$1
     ovn_remote=$2
     ovn_add_chassis=$3
@@ -662,7 +674,9 @@ function start() {
             elif [ "$OVN_DB_CLUSTER" = "yes" ]; then
                 start-db-cluster ${name}
             else
-                ${RUNC_CMD} exec ${name}-1 ${OVNCTL_PATH} start_northd
+                ${RUNC_CMD} exec ${name}-1 ${OVNCTL_PATH} \
+                --db-nb-create-insecure-remote=yes \
+                --db-sb-create-insecure-remote=yes start_northd
                 sleep 2
             fi
 
@@ -982,29 +996,34 @@ function build-images-with-ovn-rpms() {
     build-images
 }
 
-function build-images-with-ovn-sources() {
-    if [ ! -d ./ovs ]; then
-	    echo "OVS_SRC_PATH = $OVS_SRC_PATH"
-	    if [ "${OVS_SRC_PATH}" = "" ]; then
-            echo "Set the OVS_SRC_PATH var pointing to the location of ovs source code."
-            exit 1
-	    fi
-
-	    rm -rf ./ovs
-	    cp -rf $OVS_SRC_PATH ./ovs
-	    DO_RM_OVS='yes'
-    fi
-
+function clone-ovn-ovs-repos() {
+    OVN_REPO="https://github.com/ovn-org/ovn.git"
+    OVS_REPO="https://github.com/openvswitch/ovs.git"
+    rm -rf ./ovn
+    git clone -b $OVN_TAG --single-branch $OVN_REPO
     if [ ! -d ./ovn ]; then
-	    echo "OVN_SRC_PATH = $OVN_SRC_PATH"
-	    if [ "${OVN_SRC_PATH}" = "" ]; then
-            echo "Set the OVN_SRC_PATH var pointing to the location of ovn source code."
-            exit 1
-	    fi
-	    rm -rf ovn
-	    cp -rf $OVN_SRC_PATH ovn
-	    DO_RM_OVN='yes'
+        echo "Failed to clone ovn $OVN_REPO, tag $OVN_TAG"
+        exit 1
     fi
+    export OVN_SRC_PATH="$PWD/ovn"
+
+    rm -rf ./ovs
+    git clone -b $OVS_TAG --single-branch $OVS_REPO
+    if [ ! -d ./ovs ]; then
+        echo "Failed to clone ovs $OVS_REPO, tag $OVS_TAG"
+        exit 1
+    fi
+    export OVS_SRC_PATH="$PWD/ovs"
+}
+
+function build-images-with-ovn-sources() {
+    clone-ovn-ovs-repos
+
+    echo "OVS_SRC_PATH = $OVS_SRC_PATH"
+    DO_RM_OVS='yes'
+
+    echo "OVN_SRC_PATH = $OVN_SRC_PATH"
+    DO_RM_OVN='yes'
 
     touch tst.rpm
     build-images

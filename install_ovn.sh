@@ -39,7 +39,7 @@ else
     cd /ovs
     ./boot.sh
     ./configure --localstatedir="/var" --sysconfdir="/etc" --prefix="/usr" \
-        --enable-ssl --disable-libcapng --enable-Werror CFLAGS="${cflags}"
+        --disable-libcapng --enable-Werror CFLAGS="${cflags}"
     make -j$(($(nproc) + 1)) V=0
     make install
     cp ./ovsdb/_server.ovsschema /root/ovsdb-etcd/schemas/
@@ -62,29 +62,21 @@ else
     # build. Note: no explicit install is needed here.
     ./boot.sh
     ./configure --localstatedir="/var" --sysconfdir="/etc" --prefix="/usr" \
-    --enable-ssl --disable-libcapng --enable-Werror CFLAGS="${cflags}"
+    --disable-libcapng --enable-Werror CFLAGS="${cflags}"
     make -j$(($(nproc) + 1)) V=0
 
     cd /ovn
     # build and install
     ./boot.sh
-    ./configure --localstatedir="/var" --sysconfdir="/etc" --prefix="/usr" \
-    --enable-ssl \
-    CFLAGS="${cflags}"
+    ./configure --localstatedir="/var" --sysconfdir="/etc" --prefix="/usr" CFLAGS="${cflags}"
+
     make -j$(($(nproc) + 1)) V=0
     make install
     cp ./ovn-nb.ovsschema /root/ovsdb-etcd/schemas/
     cp ./ovn-sb.ovsschema /root/ovsdb-etcd/schemas/
 fi
 
-# Generate SSL certificates.
 cd /
-mkdir -p /opt/ovn
-OVS_PKI="ovs-pki --dir=/opt/ovn/pki"
-$OVS_PKI init
-pushd /opt/ovn
-$OVS_PKI req+sign ovn switch
-popd
 
 # remove unused packages to make the container light weight.
 dnf autoremove -y || apt autoremove -y

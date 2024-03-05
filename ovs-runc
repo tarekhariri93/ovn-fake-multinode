@@ -15,7 +15,7 @@
 
 # Check for programs we'll need.
 
-RUNC_CMD="${RUNC_CMD:-podman}"
+RUNC_CMD="${RUNC_CMD:-docker}"
 
 search_path () {
     save_IFS=$IFS
@@ -35,10 +35,24 @@ ovs_vsctl () {
     ovs-vsctl --timeout=60 "$@"
 }
 
+check_for_netns () {
+    ip netns add tmpNS
+    export NETNS_PATH="/var/run/netns-mlnx"
+    if [ ! -f "$NETNS_PATH/tmpNS" ]; then
+        export NETNS_PATH="/var/run/netns"
+    fi
+    if [ ! -f "$NETNS_PATH/tmpNS" ]; then
+        echo "did not find the netns run path"
+        ip netns del tmpNS
+        exit 1
+    fi
+    ip netns del tmpNS
+}
+
 create_netns_link () {
-    mkdir -p /var/run/netns
-    if [ ! -e /var/run/netns/"$PID" ]; then
-        ln -s /proc/"$PID"/ns/net /var/run/netns/"$PID"
+    check_for_netns
+    if [ ! -e "$NETNS_PATH"/"$PID" ]; then
+        ln -s /proc/"$PID"/ns/net "$NETNS_PATH"/"$PID"
         trap 'delete_netns_link' 0
         for signal in 1 2 3 13 14 15; do
             trap 'delete_netns_link; trap - $signal; kill -$signal $$' $signal
@@ -47,7 +61,7 @@ create_netns_link () {
 }
 
 delete_netns_link () {
-    rm -f /var/run/netns/"$PID"
+    rm -f "$NETNS_PATH"/"$PID"
 }
 
 get_port_for_container_interface () {
@@ -221,7 +235,7 @@ set_vlan () {
 
 usage() {
     cat << EOF
-${UTIL}: Performs integration of Open vSwitch with podman.
+${UTIL}: Performs integration of Open vSwitch with docker.
 usage: ${UTIL} COMMAND
 
 Commands:
